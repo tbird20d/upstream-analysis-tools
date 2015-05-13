@@ -1,0 +1,149 @@
+#!/usr/bin/python
+#
+# file-stats.py - examine a set of git commits for a file or set of files,
+#    and show the complexity value for that commits (for the given log scope)
+#
+# example: file-stats v3.4.. --author=balbi drivers/usb
+# this would show all the commits made by author 'balbi' since version 3.4
+# of the kernel.  For each file, it would show the diffstat for each commit
+# modified that file.  Finally file-stats would show a table showing the
+# complexity value for each file, based on that set of commits for each file.
+#
+# 'complexity' is a rough gauge of the size of patches made to that file.
+
+
+import sys
+import os
+import commands
+import re
+
+def usage():
+	print """usage: %s <git_log_args>
+This program shows the commit information, by file, for a selected
+set of commits in the current git repository
+
+ -h        Show this usage
+ -n <num>  Limit output to top <num> files???
+""" % (os.path.basename(sys.argv[0]))
+	sys.exit(0)
+
+class file_info:
+	def __init__(self, file, hash, author, statline):
+		self.file = file
+		self.hash = hash
+		self.author = author
+		self.statline = statline
+
+def complexity(fi_list):
+	complexity = len(fi_list)*2
+	for f in fi_list:
+		#print f.__dict__
+		(num, rest) = f.statline.split(" ", 2)
+		complexity += int(num)
+	return complexity
+
+def statline_shrink(line, max_width=80):
+	num_str, marks = line.split(" ")
+	num = int(num_str)
+	max_width = max_width - 6
+	if len(marks)>max_width:
+		half = max_width/2 - 2
+		marks = marks[:half]+"..."+marks[-half:]
+	return "%5d %s" % (num, marks)
+
+def main():
+	if '-h' in sys.argv:
+		usage()
+
+	count_limit = 99999
+	if '-n' in sys.argv:
+		i = sys.argv.index('-n')
+		count_limit = int(sys.argv[i+1])
+		del sys.argv[i+1]
+		del sys.argv[i]
+
+	git_args = sys.argv[1:]
+	git_args_str = " ".join(git_args)
+
+	# gather the commit data
+	cmd="git log --pretty=format:%%h,%%ae --stat=99999,200 %s" % git_args_str
+	(rcode, result) = commands.getstatusoutput(cmd)
+
+	files = {}
+	hash_str = "None"
+	author = "None"
+	domain = "None"
+	for line in result.split("\n"):
+		if not line:
+			continue
+
+		if re.search("changed", line):
+			continue
+
+		if re.match("^[0-9a-f]", line):
+			try:
+				(hash_str, rest) = line.split(",")
+				print "hash_str=", hash_str
+			except:
+				print "ERROR: can't parse line:", line
+				continue
+			try:
+				(author, domain) = rest.split("@")
+			except:
+				author = rest
+				domain = "None"
+				# handle commit 40dad0af specially
+				if author=="Mark Langsdorf":
+					author = "mark.langsdorf"
+					domain = "calxeda.com"
+			continue
+
+		(filename, statline) = line.split("|", 2)
+		filename = filename.strip()
+		statline = statline.strip()
+		f = file_info(filename, hash_str, author, statline)
+		try:
+			files[filename].append(f)
+		except:
+			files[filename] = [f]
+
+	if None:
+		print "### ERROR parsing 'git log' results.  Results are:"
+		print result
+		print "### ERROR parsing 'git log' results.  Results listed above"
+		sys.exit(1)
+
+	# print out files in filename order
+	print "##### FILES in filename order"
+	filename_list = files.keys()
+	filename_list.sort()
+	for filename in filename_list:
+		print filename
+
+		for f in files[filename]:
+			# truncate statline, if needed
+			statline = statline_shrink(f.statline, 50)
+			print "  %s %-24s %s" % (f.hash, f.author, statline)
+
+	print
+
+	# now sort by number of commits
+	file_tuples = [(f, len(files[f]), complexity(files[f])) \
+				for f in files]
+
+	# sort by complexity
+	# ALTERNATE: could sort by # of commits here (x[1])
+	file_tuples.sort(key=lambda x: x[2])
+
+	# truncate list according to count_limit
+	file_tuples = file_tuples[-count_limit:]
+
+	# print out files sorted by count of commits
+	print "##### FILES sorted by complexity"
+	print "%-60s commits complexity" % "filename"
+	for f_tuple in file_tuples: 
+		print "%-60s %6d   %5d" % \
+			(f_tuple[0], f_tuple[1], f_tuple[2])
+
+if __name__=="__main__":
+	main()

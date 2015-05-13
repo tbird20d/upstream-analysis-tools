@@ -1,0 +1,18 @@
+#!/bin/sh
+# Show statistics for the authors for a set of commits
+#   (specifically, show the number of commits per author, for a set of commits)
+#
+# Usage: author-stats [scope-qualifiers]
+#
+# <scope-qualifiers> are any valid arguments usable with 'git log' to restrict
+# the set of commits to analyze.  Some common ones are:
+# v3.4..  - set a baseline version (only include commits after v3.4)
+# --author="*sony*"
+#
+# uses environment var GIT_SCOPE, if defined
+
+echo "SCOPE=$GIT_SCOPE $@"
+echo "commits author e-mail"
+echo "------- -------------"
+git log --all-match $GIT_SCOPE $@ --pretty=%ae | sort | uniq -c | sort -n 
+

@@ -1,0 +1,13 @@
+#!/bin/sh
+
+if [ ! -f base.diffinfo ] ; then
+	echo "making base.diffinfo..."
+	diffinfo base.diff >base.diffinfo
+fi
+echo "making part.diffinfo..."
+cat area*.diff | diffinfo -n part.diff
+diffinfo part.diff >part.diffinfo
+echo "making remainder.diffinfo file"
+diff -u part.diffinfo base.diffinfo >remainder.diffinfo
+echo "here is comparison with base..."
+tail -n 3 remainder.diffinfo

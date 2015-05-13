@@ -1,0 +1,158 @@
+This document describes a suite of source code analysis tools that are
+part of the upstream-analysis-tools project.
+
+The tools come in 3 main categories:
+ * diffinfo - a generic tool for patch analysis
+ * git stats tools
+ * area stats tools (kernel source-tree analysis tools)
+
+These tools are used separately or in conjunction to answer various
+questions a developer or organization might have about a source tree,
+either in isolation or in reference to an upstream version of the source.
+
+
+== Diffinfo ==
+This is a general tool for examining and manipulating 'diff' files
+(also known as patches).
+
+This tool can function as a replacement for the popular tool 'diffstat'.
+But it also provides some filtering and re-writing capabilities that
+allow it to be used to split diffs into parts for analysis and easier
+manipulation.
+
+[need some more description here...]
+
+== Git stats tools ==
+These tools are used to find characteristics about a particular
+set of commits.  These are used to "mine" a git repository for
+information which may be of interest.
+
+Most of these tools are thin wrappers around the 'git' command
+itself.
+
+The suite includes:
+ * author-stats: shows number of commits per author (email) for a
+	particular set of commits
+
+ * domain-stats: shows number of commits and number of authors for
+	each domain name, for a particular set of commits
+
+ * complexity: shows the "complexity" of a set of commits, graphed vs. time
+        This program calculates the complexity of every commit in the set
+	of commits. The set of commits is specified using the same arguments
+	you would use with 'git log' (e.g. --author, --since, or
+	<since>..<until>, etc.)
+
+        You can see the output in a text list on the command line, or
+	alternatively show a plot of the complexity of a series of commits
+	over time.  To see an graphic plot, you need the python module
+	for matplotlib installed on your system.
+
+ * file-stats: show the complexity stats for a file or set of files
+	for a set of commits.  The list of files is sorted by the
+	compexity value.
+
+        Note: if the program faults, try adding '--' before the list of
+        files.
+
+ * hotspots.py: show the complexity stats for a set of commits, for 
+	a predetermined set of 'areas' of the kernel source.  This is
+	intended to help identify areas of the kernel that need more
+	upstreaming work, and provide a (very, very crude) gauge for
+	how difficult that work might be.
+
+ * git-mine-stats.py: do git data-mining
+        This program provides a template for generating 2-dimensional data
+        from git logs.  It must be manually edited for each data set
+	you want to acquire.  By default, it generates commit counts
+	for several different companies, for each month from 2012-01 to
+	2014-10.
+
+ * commit-dep: find the commits that a particular commit depends on,
+	that are themselves not upstream.  This program is intended to
+	be used to identify the dependency graph for a patch, to see
+	what other patches might need to be upstreamed first, before
+	this one.
+
+Some other git tools are:
+ * git-find-file - show the branches that include a particular file
+
+
+=== SCOPING ===
+Many of the above "git stats" scripts take SCOPE arguments.
+
+These are the same arguments for restricting scope that is used by 'git log'.
+Some common scoping arguments are:
+
+'v3.4..' - show stats since mainline version v3.4
+'--author=sony' - show stats for sony authors (as well one guy named 'sony')
+'drivers/usb' - show stats for a particular sub-directory
+
+== area-stats tools ==
+This set of tools is used to find the number of lines changed for different
+areas of the kernel source, based on a diff between one kernel source tree
+and another.  A single program can be run to split a main diff into 
+sub-diffs (so-called 'area diffs'), which are then analyzed by other tools.
+
+Many of these tools are helper scripts, or scripts used to manually disect
+a diff file.
+
+ * make-areas: is the main disection script.  To use it, create a base.diff
+	file containing the diff between this kernel and it's upstream
+	base.  That is, look in the top-level Makefile, and read the
+	VERSION, PATCHLEVEL, SUBLEVEL and EXTRAVERSION values from the
+	top of the file.  Create a directory containing that version of
+	the mainline kernel (either by downloading a tarball from kernel.org
+	and expanding it, or by cloning a Linux repository and checking out
+	that version.)  Then create base.diff with:
+	 * diff -pruN <kernel_under_analysis-dir> <base-kernel-dir> >base.diff
+	(Replace <kernel_under_analysis-dir> with the directory name where
+	your kernel is located, and <base-kernel-dir> with the directory
+	where the mainline base kernel is located.)
+
+	Then run the command 'make-areas'.  This will produce a set of
+	files, with names like: area-android.diff.
+
+ * area-list: will scan the area*.diff files and produce a summary listing
+	showing each areas stats (number of files changed, insertions,
+	deletions, and hunks)
+
+ * area-insertions-list: similar to area-list, but just show the number of
+	insertions for each area.
+
+ * area-diff-delta: compare the diffinfo all area files with the diffinfo
+	for a base.diff.  The file base.diffinfo must exist.  (It can be
+	created with: 'diffinfo base.diff >base.diffinfo')
+	   example: area-diff-delta base.diffinfo
+	This is used to find out how much difference there is between
+	the areas already split from the base patch, and the base patch.
+	Basically, this shows how much diff content has not been captured
+	by the make-areas program.
+
+ * get-area-remainder: compare the diffinfo from all area files with
+	the diffinfo for the base.diff.  This is similar to area-diff-delta
+	but uses a different technique.
+
+ * makearea: split off an 'area' diff from a base diff, using a specified
+	path regex.  This is used to interactively disect a larger patch
+	into smaller ones based on file paths.
+	Note that this also created a 'method-area-<foo>' file, which
+	shows the command line used to create that area file.
+
+	  example: "makearea android drivers/android base.diff"
+
+	This would create an area-android.diff file, containing any patches
+	from base.diff that change files with a filename matching the
+	pattern 'drivers/android'.
+
+ * makepatarea: split off an 'area' diff from a base diff, using a specified
+	content regex pattern.  This is used to interactively disect a
+	larger patch into smaller ones based on a file content regex (similar
+	to grep).  Only individual hunks which match the regex will
+	be put into the area-<foo>.diff file.
+
+	  example: "makearea phy msm_otg base.diff"
+
+	This would create an area-phy.diff file, containing any patches
+	from base.diff that with hunks that have the string "msm_otg" in
+	them.

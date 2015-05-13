@@ -1,0 +1,19 @@
+To do list for upstream-analysis-tools:
+
+ - run some basic test to revalidate the workflow
+   - especially after modifying some of the scripts
+ - create add-to-area tool
+ - increase automation
+   - automatically create base.diff
+     - parse base kernel version from Makefile
+     - if in git repository, do e.g. 'git diff v3.4.. >base.diff'
+     - if not in git repository, download kernel, untar it and make diff
+   - check for weird dirs and links (e.g. mediatek and intel) and 
+     change them to something standardized
+   - do automatic dos2unix, if needed
+ - make output be in CSV format, for direct input into spreadsheets
+
+ - create tag system to put code into more than one bucket
+ - divide code into smaller pieces (sub-areas)
+ - determine 'origin' of code (e.g. Google, Soc Vendor, Upstream, other)
+   - use tags to indicate origin for different code areas

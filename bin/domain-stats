@@ -1,0 +1,108 @@
+#!/usr/bin/python
+#
+# domain-stats - examine a set of git commits, and find the number of
+# authors and number of commits for each domain found.
+#
+# specify git log arguments to filter the commits, or this command
+# will show information from the beginning of the repository.
+# for the Linux kernel, this will take a LONG time.
+
+import sys
+import os
+import commands
+
+def usage():
+	print """usage: %s <git_log_args>
+This program shows the domains and authors for a selected set of commits
+in the current git repository
+
+ -h        Show this usage
+ -n <num>  Limit output to top <num> domains
+""" % (os.path.basename(sys.argv[0]))
+	sys.exit(0)
+
+
+class commit_info:
+	def __init__(self, author, domain):
+		self.author = author
+		self.domain = domain
+
+def get_authors(commit_list):
+	authors = {}
+	for commit in commit_list:
+		authors[commit.author] = 1
+	return authors.keys()
+
+def main():
+	if '-h' in sys.argv:
+		usage()
+
+	count_limit = 99999
+	if '-n' in sys.argv:
+		i = sys.argv.index('-n')
+		count_limit = int(sys.argv[i+1])
+		del sys.argv[i+1]
+		del sys.argv[i]
+
+	git_args = sys.argv[1:]
+	git_args_str = " ".join(git_args)
+
+	# gather the commit data
+	cmd="git log --pretty=format:%%h,%%ae %s" % git_args_str
+	(rcode, result) = commands.getstatusoutput(cmd)
+
+	commits = {}
+	domains = {}
+	authors = {}
+	try:
+		for line in result.split("\n"):
+			(hash_str, rest) = line.split(",",1)
+			try:
+				(author, domain) = rest.split("@")
+			except:
+				author = rest
+				domain = "None"
+				# handle commit 40dad0af specially
+				if author=="Mark Langsdorf":
+					author = "mark.langsdorf"
+					domain = "calxeda.com"
+
+			commit = commit_info(author, domain)
+			commits[hash_str] = commit
+			try:
+				domains[domain].append(commit)
+			except:
+				domains[domain] = [commit]
+			try:
+				authors[author].append(commit)
+			except:
+				authors[author] = [commit]
+	except:
+		print "### ERROR parsing 'git log' results.  Results are:"
+		#print result
+		import traceback
+		traceback.print_exc(file=sys.stdout)
+		sys.exit(1)
+
+	domain_count = [[d, len(domains[d]), get_authors(domains[d])] \
+				for d in domains]
+	domain_count.sort(key=lambda x: x[1])
+
+	# truncate list according to count_limit
+	domain_count = domain_count[-count_limit:]
+
+	# print out domains sorted by count of commits
+	print "domain                   commits authors"
+	for d_tuple in domain_count:
+		print "%-24s %6d   %5d" % \
+			(d_tuple[0], d_tuple[1], len(d_tuple[2]))
+
+	author_count = [[a, len(authors[a])] for a in authors]
+	author_count.sort(key=lambda x: x[1])
+	for a_tuple in author_count:
+		# print count, author
+		#print a_tuple[1], a_tuple[0]
+		pass
+
+if __name__=="__main__":
+	main()

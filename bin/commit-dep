@@ -1,0 +1,413 @@
+#!/usr/bin/python
+#
+# commit-dep - show the dependencies for an individual commit
+#
+# example: commit-dep 21c5bc5
+#
+# TO DO:
+#  - recurse (how far)
+#  - print a report
+#
+# CHANGELOG
+# 0.4.0 - added version info
+# 0.3.2 - add commit_cache, avoid re-finding deps, change output for
+#   previously shown nodes
+
+import diffinfo
+import sys
+import commands
+import datetime
+import os
+
+MAJOR_VERSION = 0
+MINOR_VERSION = 4
+REVISION = 0
+
+verbose = 0
+my_debug = 0
+mainline_tree_dir = ""
+commit_cache = {}
+
+# diffinfo needs this debug definition
+# change it to 1 to debug diffinfo.read_patch()
+debug = 0
+
+def aprint(msg):
+	print msg
+
+def vprint(msg):
+	global verbose
+
+	if verbose:
+		print msg
+
+def dprint(msg):
+	global my_debug
+
+	if my_debug:
+		print msg
+
+def usage():
+	print """usage: commit-dep [<options>] <git commmit id>
+	
+show dependency info for specified commit.
+
+ -h        Show this usage help
+ -i        Ignore context lines
+ -m <dir>  Use <dir> for checking mainline status
+"""
+	sys.exit(0)
+
+
+class git_diff():
+	def __init__(self, commit_id):
+		self.commit_id = commit_id
+		self.cmd = "git show %s" % commit_id
+
+		(self.scode, show) = commands.getstatusoutput(self.cmd)
+		self.show_lines = show.split('\n')
+
+		# if it's a merge, record both diffs??
+		#self.cmd = "git diff %s" % commit_id
+		#(self.rcode, diff) = commands.getstatusoutput(self.cmd)
+		#self.diff_lines = diff.split('\n')
+
+	def xreadlines(self):
+		#for i in range(len(self.diff_lines)):
+		#	yield self.diff_lines[i]
+		for i in range(len(self.show_lines)):
+			yield self.show_lines[i]
+
+	def line_count(self):
+		return len(self.show_lines)
+
+	def close(self):
+		pass
+
+class commit_class():
+	def __init__(self, commit_id):
+		self.commit_id = commit_id
+		self.error = 0
+		self.is_super_patch = 0 # greater than 10000 lines or 100 hunks
+		self.files = {}
+		self.hunks = {}
+		self.dep_list = []
+
+		self.shown = 0
+
+	def read_commit(self):
+		# read the diff from git
+		temp = git_diff(self.commit_id)
+
+		# note if patch is larger than some arbitrary size
+		if temp.line_count() > 10000:
+			self.is_super_patch = 1
+
+	def parse_commit(self):
+		dprint("in parse_commit: parsing commit %s" % self.commit_id)
+		self.diff_pseudo_file = git_diff(self.commit_id)
+
+		try:
+			(self.files, self.hunks, junk, junk2) = \
+		    		diffinfo.read_patch(self.diff_pseudo_file)
+		except:
+			print "##### ERROR: couldn't read patch for commit_id %s ####" % self.commit_id
+			self.error = 1
+
+		dprint("in parse_commit: len(files)=%d, len(hunks)=%d" % \
+			(len(self.files), len(self.hunks)))
+		# note if patch is larger than some arbitrary size
+		if len(self.hunks) > 100:
+			self.is_super_patch = 1
+
+	def is_in_mainline(self):
+		global mainline_tree_dir
+
+		if not mainline_tree_dir:
+			return False
+
+		if is_in_mainline(self.commit_id):
+			return True
+		else:
+			return False
+
+	def commit_info(self):
+		global mainline_tree_dir
+
+		self.cmd = "git log -n 1 --format=%%ae %s" % self.commit_id
+
+		# get author and mainline status
+		(scode, author) = commands.getstatusoutput(self.cmd)
+		self.author = author.strip()
+
+		if not mainline_tree_dir:
+			mainline_str = "mainline status unknown"
+		else:
+			if is_in_mainline(self.commit_id):
+				mainline_str = "in mainline"
+			else:
+				mainline_str = "not in mainline"
+
+		if self.hunks:
+			hunks_str = "hunks=%d" % len(self.hunks)
+		else:
+			hunks_str = "hunks=??"
+
+		return "%s %s %s (%s)" % (self.commit_id,
+			self.author, hunks_str, mainline_str)
+
+	def get_results(self):
+		# FIXTHIS - return results
+		return "get_results() is not implemented yet"
+
+class node_class():
+	def __init__(self, commit, parent=None):
+		self.commit = commit
+		self.children = []
+		self.parent = parent
+
+	def add_child(self, item):
+		self.children.append(item)
+
+	def show_tree(self, indent=""):
+		if self.commit.shown:
+			repeat_str = "(dup)"
+		else:
+			repeat_str = ""
+
+		print "%s%s %s" % \
+			(indent, self.commit.commit_info(), repeat_str)
+		if not self.commit.shown:
+			for child in self.children:
+				child.show_tree(indent+"   ")
+		else:
+			if self.children:
+				print indent+"   ..."
+
+		self.commit.shown = 1
+
+	def distance_to_mainline(self):
+		# this is sum of patches between me and mainline
+		distance = 0
+		if not self.commit.is_in_mainline():
+			distance += 1
+		for child in self.children:
+			distance += child.distance_to_mainline()
+		return distance
+
+	def depth(self):
+		i = 0
+		node = self
+		while node.parent:
+			node = node.parent
+			i += 1
+		return i
+
+def get_commit_instance(commit_id):
+	global commit_cache
+
+	try:
+		commit = commit_cache[commit_id]
+	except:
+		commit = commit_class(commit_id)
+		commit_cache[commit_id] = commit
+	return commit
+
+# routine to check for a commit in mainline
+# FIXTHIS - is this the best way?  What about patches that are 
+# really upstream, but with a different commit_id?
+def is_in_mainline(commit_id):
+	global mainline_tree_dir
+
+	dprint("is_in_mainline: looking up commit_id='%s'" % commit_id)
+
+	# search mainline for a commit
+	curdir_save = os.getcwd()
+	os.chdir(mainline_tree_dir)
+	
+	cmd = "git rev-parse %s" % commit_id
+	(scode, result) = commands.getstatusoutput(cmd)
+	dprint("scode=%s" % scode)
+	dprint("mainline result=%s" % result)
+	os.chdir(curdir_save)
+
+	if scode==0:
+		return True
+	else:
+		return False
+
+def validate_mainline_dir():
+	global mainline_tree_dir
+
+	# verify that mainline_tree_dir is valid
+	if not os.path.isdir(mainline_tree_dir):
+		print "ERROR: path '%s' is not a directory" % mainline_tree_dir
+		print "Exiting."
+		sys.exit(1)
+
+	# see if git tree includes the commit for version 3.4 of the kernel
+	# git rev-parse v3.4 = 27406e97
+	if not is_in_mainline("27406e97"):
+		print "ERROR: Directory '%s' does not appear to be a mainline kernel tree" % mainline_tree_dir
+		print "Exiting."
+		sys.exit(1)
+
+# given a commit object, return list of commit objects that
+# this commit depends on
+def get_dependent_commits(commit):
+	# don't reparse if we already have a dep_list
+	if commit.dep_list:
+		return commit.dep_list
+
+	dep_list = []
+
+	# get this commits files and hunks
+	commit.parse_commit()
+
+	# show the list of files touched by this commit
+	flist = commit.files.keys()
+	flist.sort()
+	dprint("commit.files:")
+	for f in flist:
+		dprint("  %s" % f)
+
+	# show the list of hunks in this commmit
+	dprint("commit.hunks:")
+	hunk_id_list = commit.hunks.keys()
+	for hunk_id in hunk_id_list:
+		hunk = commit.hunks[hunk_id]
+		#print "  hunk_id=%s" % hunk_id
+		dprint("  file=%s, hunk=%s, lines:" % (hunk.filename, hunk.id))
+		for line in hunk.lines:
+			dprint("    %s" % line)
+
+	dprint("="*50)
+
+	# do the git-blame for each hunk:
+	# the blame must be relative to when the patch was applied
+	hunk_id_list = commit.hunks.keys()
+	dep_hash_map = {}
+	for hunk_id in hunk_id_list:
+		hunk = commit.hunks[hunk_id]
+		dprint("  hunk_id=%s" % hunk_id)
+		
+		# get the range to use
+		# range has a list of tuples from the hunk header
+		# an example is: ['-2445,8', '+2444,8']
+		dprint("hunk.range=%s" % hunk.range)
+
+		# strip leading '-' on first tuple, then split on comma
+		(start, length) = hunk.range[0][1:].split(",")
+		start = int(start)
+		length = int(length)
+
+		dprint("start=%d, length=%d" % (start, length))
+	
+		# if this is a new file, there is no previous content to scan
+		if start==0 and length==0:
+			dprint("Skipping newfile hunk")
+			continue
+
+                cmd = "git blame -L %d,+%d %s^ -- %s" % \
+			(start, length, commit.commit_id, hunk.filename)
+
+		dprint("cmd=%s" % cmd)
+
+                (scode, result) = commands.getstatusoutput(cmd)
+		dprint("scode for blame: %s" % scode)
+		if scode==0:
+			for line in result.split("\n"):
+				dprint("   %s" % line)
+				parts = line.split(" ")
+				# FIXTHIS - do something with 'ignore_context' here
+				dep_hash = parts[0]
+				dep_hash_map[dep_hash] = 1
+		else:
+			aprint("Error: error %s encountered during git blame for hunk in commit %s" % (scode, commit.commit_id))
+			aprint("Results from git='%s'" % (result))
+
+	# convert hashes into a list of commit objects
+	commit.dep_list = []
+	for dep_hash in dep_hash_map.keys():
+		c = get_commit_instance(dep_hash)
+		commit.dep_list.append(c)
+	
+	return commit.dep_list
+	
+def main():
+	global verbose, my_debug
+	global mainline_tree_dir
+
+	ignore_context = 0
+	if "-h" in sys.argv:
+		usage()
+
+	if "-i" in sys.argv:
+		ignore_context = 1
+		sys.argv.remove("-i")
+
+	if "-m" in sys.argv:
+		m_index = sys.argv.index("-m")
+		mainline_tree_dir = sys.argv[m_index+1]
+		del(sys.argv[m_index+1])
+		del(sys.argv[m_index])
+		validate_mainline_dir()
+
+	if "-v" in sys.argv:
+		verbose = 1
+		sys.argv.remove("-v")
+
+	if "--debug" in sys.argv:
+		my_debug = 1
+		sys.argv.remove("--debug")
+
+	# first, read the commit
+	commit_id = sys.argv[1]
+	vprint("Starting with commit: %s" % commit_id)
+
+	commit = get_commit_instance(commit_id)
+	root = node_class(commit, None)
+	to_process_list = [root]
+
+	max_nodes = 100
+	nodes_processed_count = 0
+	while to_process_list and nodes_processed_count < max_nodes:
+		node = to_process_list.pop(0)
+		nodes_processed_count += 1
+		dprint("nodes_processed_count=%d" % nodes_processed_count)
+
+		dprint("Processing node for commit %s" % \
+			node.commit.commit_id)
+
+		# don't check children if patch is in mainline
+		# or if patch is "too big"
+		if is_in_mainline(node.commit.commit_id):
+			dprint("Skipping commit %s: in mainline" % node.commit.commit_id)
+			continue
+
+		node.commit.read_commit()
+		if node.commit.is_super_patch:
+			dprint("Skipping commit %s: too big" % node.commit.commit_id)
+			continue
+
+		# process this node
+		dep_list = get_dependent_commits(node.commit)
+		for dep in dep_list:
+			dprint("dep found for commit %s: dep commit %s" % \
+				(node.commit.commit_id, dep.commit_id))
+			dprint(dep.commit_info())
+			sub_node = node_class(dep, node)
+			node.add_child(sub_node)
+			to_process_list.append(sub_node)
+		
+	# show dependency list
+	aprint("Dependencies for...")
+	root.show_tree()
+
+	# show summary of results
+	distance = root.distance_to_mainline()
+	aprint("Distance to mainline: %d" % distance)
+
+if __name__=="__main__":
+	main()
+	sys.exit(0)

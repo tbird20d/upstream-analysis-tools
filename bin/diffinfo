@@ -1,0 +1,958 @@
+#!/usr/bin/python -u
+
+# diffinfo - replacement for diffstat which provides more detailed
+# information about the patch.  Also, it can filter and re-write
+# patches based on various criteria.
+#
+# The files and hunks in the patch can be filtered by:
+#	- arbitrary regex match
+#		(useful for C variables or structs, or for CONFIG_VARS)
+#	- filename pattern match
+#
+# This is kind of grep-like feature, which is useful
+# for analyzing a large patch.
+#
+# This program only works with unified-style diffs.
+# (patches made using diff with the -u option)
+#
+# This tool was originally written to help split large patches
+# into several standalone fragments.
+#
+# Author: Tim Bird <tim.dot.bird ~(at)~ am.dot.sony.dot.com>
+# Copyright (C) 2003 Sony Electronics, Inc.
+#
+# Author: Tim Bird <tim.dot.bird ~(at)~ sonymobile.dot.com>
+# Copyright (C) 2015 Sony Mobile Communications Inc.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#    * Redistributions of source code must retain the above copyright
+#      notice, this list of conditions and the following disclaimer.
+#    * Redistributions in binary form must reproduce the above copyright
+#      notice, this list of conditions and the following disclaimer in the
+#      documentation and/or other materials provided with the distribution.
+#    * Neither the name of the <organization> nor the
+#      names of its contributors may be used to endorse or promote products
+#      derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+# DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+# ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# TODO:
+#   - ability to write non-matching parts to a file
+#	- this can be done now, using inverse flags and 2 passes
+#   - support multiple filenames (loop over args)
+#   - check for intersection between two patches
+#	- compare hunks for same file, and look for overlapping regions
+#   - support context-style (-c) diffs
+#   - handle "Only in" files better
+#   - handle merge diffs (3 or more @@@ in hunk line, comma in index line)
+#
+# CHANGELOG
+# version 1.0.6 - handle headers with missing file changes (permission-only
+#                  changes)
+# version 1.0.5 - use gnu_getopt to allow flags after the patch file argument
+# version 1.0.4 - add BSD 3-clause license
+# version 1.0.3 - skip some lines found in '--git' diffs
+#		fix some bugs in pcomp - it kind-a works at the patch-stat level
+# version 1.0.2 - skip blank (empty) lines
+
+major_version = 1
+minor_version = 0
+revision = 6
+
+import os
+import sys
+import getopt
+import string
+import re
+import copy
+
+# try to compile with psyco, if present
+try:
+	import psyco
+	#psyco.log("/tmp/psyco.log")
+	psyco.full()
+except:
+	pass
+
+def vprint(message):
+	global verbose
+
+	# if verbose is not present in this module, lookup verbose
+	# in the main module namespace
+	try:
+		verbose=verbose
+	except:
+		import __main__
+		verbose = __main__.__dict__['verbose']
+	if verbose: print message
+
+def dprint(message):
+	global debug
+
+	# if debug is not present in this module, lookup debug
+	# in the main module namespace
+	try:
+		debug=debug
+	except:
+		import __main__
+		debug = __main__.__dict__['debug']
+	if debug: print message
+
+def perror(message):
+	sys.stderr.write(message+"\n")
+
+#
+# Note that --debug is an undocumented option, which emits
+# debug information during processing.
+#
+def diffinfo_usage(progname):
+	print """Usage: %s [options] [<patch_file>]
+
+Reads <patch_file>, and produces information about the number
+of lines changed and number of hunks for each file referenced.
+It can produce a list of hunks matching a regular expression,
+and can optionally write out only those hunks to a new patch file.
+This allows you to extract sub-patches from a single large patch.
+
+If no file is specified on the command line, the program reads the patch
+from stdin.
+
+    -h, --help       Show this usage help.
+    -v, --verbose    Show verbose output (including hunk details)
+    -f, --force      Force continuing even if errors are encountered
+    -d               Show info in 'diffstat' format (without histogram)
+    -p <path>        Show info for files matching path <path>
+    -q               Specify NOT (inverse) operation of path match.
+    -s <pat_string>  Show info for pattern string <pat_string>	
+    -a               Specify AND operation with a second pattern match 
+    -o               Specify OR operation with a second pattern match 
+    -i               Specify NOT (inverse) operation of pattern match
+    -n <file>        Write matching hunks to new patch <file>
+                     If <file> is "-", then output to stdout.
+                     Note: This writes the entire patch unless used
+                       with a matching option (-s or -p).
+    -l               show a simple list of files
+    -V, --version    Print the version number
+""" % os.path.basename(progname)
+	sys.exit(1)
+
+
+# class for holding file header information, and a list of hunks
+class fileinfo:
+	def __init__(self, filename, header):
+		self.filename = filename
+		self.header = header
+		self.hunks = []
+	def write_header(self,file):
+		for line in self.header:
+			file.write(line)
+
+# class for holding information about a single hunk
+class hunkinfo:
+	def __init__(self, filename, range, id):
+		self.filename = filename
+		self.id = id
+		self.pluses = 0
+		self.minuses = 0
+		self.configvars = 0 
+		self.lines = [range]
+
+		# separate out the range information
+		rparts = range.split()
+		self.range = rparts[1:3]
+
+	def add_line(self, line):
+		# returns whether this line is an actual change
+		self.lines.append(line)
+
+		is_change = 0
+		if line.startswith("+"):
+			self.pluses += 1
+			is_change = 1
+
+		if line.startswith("-"):
+			self.minuses += 1
+			is_change = 1
+
+		return is_change
+
+	def write_lines(self, file):
+		for line in self.lines:
+			file.write(line)
+
+	def line_match(self, pat):
+		for line in self.lines:
+			if (line.startswith("-") or line.startswith("+")) and \
+				pat.findall(line):
+				return 1
+		return 0
+
+# try to unpickle items from cached data
+def read_patch_cache(filename):
+	import cPickle
+
+	if not filename:
+		return (None, None, None, None)
+
+	pfilename = "dicache_"+filename
+	try:
+		fd = open(pfilename)
+		p = cPickle.Unpickler(fd)
+		files = p.load()
+		hunks = p.load()
+		hunk_matches = p.load()
+		path_matches = p.load()
+		fd.close()
+		return (files, hunks, hunk_matches, path_matches)
+	except:
+		return (None, None, None, None)
+
+# pickle items to a cache file
+def write_patch_cache(filename, files, hunks, hunk_matches, path_matches):
+	import pickle
+
+	if not filename:
+		return
+
+	pfilename = "dicache_"+filename
+	try:
+		fd = open(pfilename, "w")
+		p = pickle.Pickler(fd, pickle.HIGHEST_PROTOCOL)
+		p.dump(files)
+		p.dump(hunks)
+		p.dump(hunk_matches)
+		p.dump(path_matches)
+		fd.close()
+	except:
+		pass
+
+# Find filename in header (either 3-line or 2-line)
+# header looks like this:
+#diff -u -ruN linux-2.4.20.orig/CREDITS celf-030822.orig/CREDITS
+#--- linux-2.4.20.orig/CREDITS   Thu Nov 28 15:53:08 2002
+#+++ celf-030822.orig/CREDITS    Fri Aug 22 16:20:11 2003
+#	
+# or it may look like this, for one-file patches
+#--- testfile    Mon Oct 13 10:55:14 2003
+#+++ testfile2   Mon Oct 13 10:55:04 2003
+#
+# or it may look like this, when ??? flags are used with diff:
+#Index: testfile
+#============================================================================
+#--- testfile    Mon Oct 13 10:55:14 2003
+#+++ testfile2   Mon Oct 13 10:55:04 2003
+#
+# or it may look like this, when produced with --git:
+#diff --git a/ipc/msg.c b/ipc/msg.c
+#index fbf7570..2cd9342 100644
+#--- a/kernel/Makefile
+#+++ b/kernel/Makefile
+#
+# or it may look like this, when produced with --git:
+#diff ---git a/include/asm-arm/ltt.h b/include/asm-arm/ltt.h
+#new file mode 100644
+#index 0000000..cab8582
+#--- /dev/null
+#+++ b/include/asm-arm26/ltt.h
+
+def extract_filename(file_header):
+	# find file path on last line, in 2nd token position
+	# (with tokens separated by whitespace)
+	file_line = file_header[-1]
+	try:
+		file_path = file_line.split()[1]
+	except:
+		print "ERROR: about to raise exception in extract_filename"
+		print "trying to read file_path from line: '%s'" % file_line
+		raise IndexError
+
+
+	# remove first directory of file path 
+	# FIXTHIS - should remove all common prefixes, like diffstat
+	file_path_parts = file_path.split("/")
+	if len(file_path_parts)>1:
+		del(file_path_parts[0])
+	file_name = string.join(file_path_parts,"/")
+	return(file_name)
+
+# function used to set correct ending for plural words
+# (return an "s" if number is not 1)
+def s(x):
+	if x==1:
+		return ""
+	else:
+		return "s"
+
+# this routine is intended to output results in exactly the same format as
+# diffstat, except for the histogram.
+def show_diffstat_results(files, hunks):
+	filenames = files.keys()
+	filenames.sort()
+	# find longest filename and use for format string
+	width = 0
+	for filename in filenames:
+		if width <len(filename):
+			width = len(filename)
+	
+	format = " %%-%ss |%%5d " % width
+	tp = 0
+	tm = 0
+	tf = 0
+	for filename in filenames:
+		file_info = files[filename]	
+		p = 0
+		m = 0
+		for hunk in file_info.hunks:
+			p += hunk.pluses
+			m += hunk.minuses
+		print format % (filename, p+m)
+		tp += p
+		tm += m
+		tf += 1
+	print " %d files changed, %d insertion%s(+), %d deletion%s(-)" % \
+		(tf,tp,s(tp),tm,s(tm))
+
+
+def show_results(files, hunks, path_matches):
+	global verbose
+
+	filenames = files.keys()
+	filenames.sort()
+	# find longest filename and use for format string
+	width = 0
+	for filename in filenames:
+		# filter using path_matches
+		if path_matches and not path_matches.has_key(filename):
+			continue
+		if width <len(filename):
+			width = len(filename)
+	
+	format = " %%-%ss %%s%%5d+ %%5d-" % width
+	tp = 0
+	tm = 0
+	tf = 0
+	th = 0
+	for filename in filenames:
+		if path_matches and not path_matches.has_key(filename):
+			continue
+		file_info = files[filename]	
+		p = 0
+		m = 0
+		# assume file is not new
+		newflag="|"
+		for hunk in file_info.hunks:
+			p += hunk.pluses
+			m += hunk.minuses
+			# see if file is new
+			if hunk.range[0]=="-0,0":
+				newflag="N"
+		print format % (filename, newflag, p, m),
+		h = len(file_info.hunks)
+		print "(%d hunk%s)" % (h, s(h))
+		tp += p
+		tm += m
+		tf += 1
+		th += h
+
+		if verbose: #could have here: and c>1:
+			# show info for each hunk
+			i = 1 
+			for hunk in file_info.hunks:
+				print "    hunk %5d: %5d+ %5d- @ %s" % \
+					(i, hunk.pluses, hunk.minuses, hunk.range[1])
+				i += 1	
+
+	print " %d file%s changed, %d insertion%s(+), %d deletion%s(-), %d hunk%s" % \
+		 (tf,s(tf),tp,s(tp),tm,s(tm),th,s(th))
+
+def show_files_only(files, pat, hunks, hunk_matches, path_matches):
+	if pat:
+		# find the set of files with matching hunks
+		fileset = {}
+		for hunk_id in hunk_matches.keys():
+			hunk = hunk_matches[hunk_id]
+			fileset[hunk.filename] = 1
+		filenames = fileset.keys()
+	else:
+		filenames = files.keys()
+
+	filenames.sort()
+
+	# find longest filename and use for format string
+	for filename in filenames:
+		# filter using path_matches
+		if path_matches and not path_matches.has_key(filename):
+			continue
+		print filename
+	
+def show_pat_results(files, hunks, hunk_matches, path_matches):
+	# find the set of files with matching hunks
+	fileset = {}
+	for hunk_id in hunk_matches.keys():
+		hunk = hunk_matches[hunk_id]
+		fileset[hunk.filename] = 1
+	filenames = fileset.keys()
+	filenames.sort()
+
+	# find longest filename and use for format string
+	width = 0
+	for filename in filenames:
+		# filter using path_matches
+		if path_matches and not path_matches.has_key(filename):
+			continue
+		if width <len(filename):
+			width = len(filename)
+	
+	format = " %%-%ss | hunks:" % width
+	tf = 0
+	th = 0
+	for filename in filenames:
+		# filter using path_matches
+		if path_matches and not path_matches.has_key(filename):
+			continue
+		print format % filename,
+		file_info = files[filename]	
+		i = 0
+		for hunk in file_info.hunks:
+			if hunk_matches.has_key(hunk.id):
+				print "%d" % (i+1),
+				th += 1
+			i += 1
+		t = len(file_info.hunks)
+		print "in %d hunk%s" % (t,s(t))
+		tf += 1
+	print " %d file%s, %d hunk%s matched" % (tf,s(tf),th,s(th))
+
+# routine to write out only the matching hunks to a file
+def write_new_patch(new_filename, files, hunk_matches, path_matches):
+	if new_filename=="-":
+		print "Writing new patch to standard out."
+		outfile = sys.stdout
+	else:
+		print "Writing new patch to file:", new_filename
+		outfile = open(new_filename,"w")
+
+	# find the set of files with matching hunks
+	fileset = {}
+	for hunk_id in hunk_matches.keys():
+		hunk = hunk_matches[hunk_id]
+		fileset[hunk.filename] = 1
+	filenames = fileset.keys()
+	filenames.sort()
+
+	# output all matching hunks for this filename
+	for filename in filenames:
+		# filter using path_matches
+		if path_matches and not path_matches.has_key(filename):
+			continue
+		file_info = files[filename]
+		file_info.write_header(outfile)
+		for hunk in file_info.hunks:
+			if hunk_matches.has_key(hunk.id):
+				hunk.write_lines(outfile)
+
+	if new_filename!="-":
+		outfile.close()
+	#print "Done."
+
+
+def is_match(hunk, pat, pat_operator, pat2, pat_inverse):
+	if not pat2:
+		# only have one pattern, return match result for that
+		res1 = hunk.line_match(pat)
+	else:
+		res1 = hunk.line_match(pat)
+		res2 = hunk.line_match(pat2)
+		if pat_operator == "OR":
+			res1 = res1 | res2
+		else:
+			res1 = res1 & res2
+
+	if pat_inverse:
+		return not res1
+	else:
+		return res1
+
+def is_path_match(filepath, pat_str, path_inverse):
+	# if no pattern string, it's a match!
+	if not pat_str:
+		return 1
+	res = re.findall(pat_str, filepath) 
+	if path_inverse:
+		return not res
+	else:
+		return res
+
+def read_patch(patch_file, path_pat_str="", path_inverse=0, \
+		pat=None, pat_operator="AND", pat2=None, \
+		pat_inverse=0, new_filename=""):
+	global verbose, debug
+
+	files = {}	
+	hunks = {}
+	hunk_matches = {}
+	path_matches = {}
+
+	file_header = []
+	# in_header has lines remaining in header
+	in_header = 0
+	in_patch = 0
+	hunk_id = 0
+	cur_hunk = None
+	line_no = 0
+
+	# process each line, keeping track of current file, hunk, and totals
+	for line in patch_file.xreadlines():
+		line_no += 1
+		dprint("line_no=%d" % line_no)
+		dprint("line=<%s>" % line)
+		dprint("len(line)=%d" % len(line))
+		dprint("in_header=%s" % in_header)
+		is_change = 0
+		if in_header:
+			file_header.append(line)
+			# ignore --git lines in the hunk header
+			# FIXTHIS - these should be preserved when re-writing
+			# patches
+			if line.startswith("old mode"):
+				continue
+			if line.startswith("new mode"):
+				continue
+			if line.startswith("new file mode"):
+				continue
+			if line.startswith("index "):
+				continue
+			
+			# there can be mode change items with no actual
+			# file hunks, e.g.:
+			#     diff --git a/foo b/foo
+			#     new file mode 100644
+			#     index 0000000.e69de29
+			#     diff --git a/bar b/bar
+			#     --- /a/bar
+			#     +++ /b/bar
+			# Note the absence of filenames in the header for
+			# the top diff.
+			# if a new diff is encountered inside another header
+			# terminate this header and move on
+			if line.startswith("diff "):
+				dprint("found new file header (3-line)")
+				dprint("!! while parsing previous header !!")
+				file_header = [line]
+				# in_header has lines remaining in header
+				in_header = 2
+				in_patch = 1
+				continue
+
+			# count down through header lines
+			if in_header > 1:
+				in_header -= 1 
+				continue
+			else:
+				cur_filename = extract_filename(file_header)
+				dprint("filename=%s" % cur_filename)
+				cur_file = fileinfo(cur_filename, file_header)
+				files[cur_filename] = cur_file
+				# check filename for path match
+				if is_path_match(cur_filename, path_pat_str,
+					path_inverse):
+					dprint("path_match")
+					path_matches[cur_filename] = cur_file
+				in_header = 0
+				continue
+
+		if line.startswith("diff "):
+			dprint("found new file header (3-line)")
+			file_header = [line]
+			# in_header has lines remaining in header
+			in_header = 2
+			in_patch = 1
+			continue
+
+		if line.startswith("Index: "):
+			dprint("found new file header (4-line)")
+			file_header = [line]
+			# in_header has lines remaining in header
+			in_header = 3
+			in_patch = 1
+			continue
+
+		if line.startswith("--- ") and line.find("/") != -1:
+			# FIXTHIS - I get some false positives here
+			# above check makes sure at least one slash is in
+			# the line - what a total kludge!
+			# FIXTHIS - should add an option to ignore this kind of header
+			dprint("found new file header (2-line)")
+			file_header = [line]
+			in_header = 1
+			in_patch = 1
+			continue
+
+		# skip everything until the first header is found
+		if not in_patch:
+			continue
+
+		if line.startswith("@@ "):
+			dprint("found new hunk")
+			# do pattern matching on old hunk, if it exists
+			if cur_hunk and pat:
+				if is_match(cur_hunk, pat, pat_operator, pat2, pat_inverse):
+					hunk_matches[hunk_id] = cur_hunk
+			
+			hunk_id += 1
+			cur_hunk = hunkinfo(cur_filename, line, hunk_id)
+			cur_file.hunks.append(cur_hunk)
+			hunks[cur_filename+line] = cur_hunk
+			continue
+
+		# check for special diff strings
+		# No newline at end of file
+		if line.startswith("\ No newline"):
+			continue
+
+		# end of patch
+		if line=="_\n":
+			continue
+
+		# FIXTHIS - doesn't handle "Only in" line,
+		# like following:
+		#Only in celf-030822.orig/net/ipv6: anycast.c
+		if line.startswith("Only in"):
+			if not force:
+				perror('Error: Missing data:')
+				perror(line[:-1])
+				perror("Please use diff '-N' option to create the patch with full file contents")
+				perror("or use the --force option to force operation despite this error.")
+				sys.exit(1)
+			else:
+				perror("Missing data:")
+				perror(line[:-1])
+				perror("Please use diff '-N' option to create the patch with full file contents\n")
+				continue
+
+		#
+		# should look for source file or dir, do 'wc' and specially
+		# denote it.
+		
+		is_change = cur_hunk.add_line(line)
+
+		# skip analyzing blank lines
+		if len(line)==1:
+			continue
+
+		# FIXTHIS - scan lines for config_var matches
+
+		# if we're writing a new patch, but
+		# no pattern is specified,
+		# treat every line in every hunk as a match
+		if new_filename and not pat:
+			hunk_matches[hunk_id] = cur_hunk
+
+		# catch stuff we don't recognize
+		if not is_change and not line.startswith(" ") and not \
+			(line.startswith("Binary files") and \
+			line.endswith("differ\n")):
+			dprint("Error: unrecognized patch element: line='%s'" % line)
+			perror("Error: unrecognized patch element")
+			perror("line='%s'" % line)
+			# don't quit on this error -- just continue
+
+	# do pattern matching on last hunk, if it exists
+	if cur_hunk and pat:
+		if is_match(cur_hunk, pat, pat_operator, pat2, pat_inverse):
+			hunk_matches[hunk_id] = cur_hunk
+
+	# we're done with input
+	patch_file.close()
+
+	return (files, hunks, hunk_matches, path_matches)
+		
+
+def diffinfo_main():
+	global verbose, debug
+
+	# parse command line args
+	try:
+		opts, args = getopt.gnu_getopt(sys.argv[1:],
+			"hvfdc:p:qs:aoin:lV",["help", "force", "verbose",
+				"debug","version"])
+	except getopt.GetoptError:
+		# print help information and exit
+		diffinfo_usage(sys.argv[0])
+
+	force = 0
+	verbose = 0
+	debug = 0
+	diffstat_format = 0
+        files_only = 0
+	config_var = ""
+	path_pat_str = ""
+	path_inverse = 0
+	pat = None
+	pat_str = ""
+	pat2 = None
+	pat_operator = "AND"
+	pat_inverse = 0
+	new_filename = ""
+
+	# handle options
+	for o,a in opts:
+		if o in ("-h", "--help"):
+			diffinfo_usage(sys.argv[0])
+		if o in ("-v", "--verbose"):
+			verbose = 1
+		if o == "--debug":
+			debug = 1
+		if o == "-d":
+			diffstat_format = 1
+		if o == "-c":
+			config_var = a
+		if o in ("-f", "--force"):
+			force = 1
+		if o == "-p":
+			path_pat_str = a
+		if o == "-s":
+			if not pat_str:
+				pat_str = a
+				pat = re.compile(pat_str)
+			else:
+				pat_str2 = a
+				pat2 = re.compile(pat_str2)
+				# reform pat_str for display
+				pat_str += " "+ pat_operator+" "+pat_str2
+		if o == "-a":
+			pat_operator = "AND"
+		if o == "-o":
+			pat_operator = "OR"
+		if o == "-i":
+			pat_inverse = 1
+		if o == "-q":
+			path_inverse = 1
+		if o == "-n":
+			new_filename = a
+		if o == "-l":
+			files_only = 1
+		if o in ["-V","--version"]:
+			print "diffinfo version %d.%d.%d" % (major_version, minor_version, revision)
+			sys.exit(1)
+
+	# if no argument, then read patch from stdin
+	patch_filename = ""
+	if len(args)<1:
+		patch_file = sys.stdin
+	else:
+		# otherwise, gather the data from the named file
+		# FIXTHIS - should loop through input files, if more than
+		# one is specified
+		try:
+			patch_filename = args[0]
+			patch_file = open(patch_filename, "r")
+		except IOError, arg:
+			print "Error - can't open patch file: %s" % args[0]
+			print arg.strerror
+			sys.exit(1)
+
+	# check for cache of items here 
+	#(files, hunks, hunk_matches, path_matches) = \
+	#	read_patch_cache(patch_filename)
+	(files, hunks, hunk_matches, path_matches) = \
+		read_patch(patch_file, path_pat_str, path_inverse, \
+			pat, pat_operator, pat2, pat_inverse, new_filename)
+
+	# if requested, write results to cache
+	#if cache_results_flag:
+	#	write_patch_cache(patch_filename, files, hunks, hunk_matches, path_matches)
+
+	# path_matches is used as a boolean to indicate that
+	# we tried to match based on path_pat_str
+	if path_pat_str:
+		path_matches[1] = 1
+
+        if files_only:
+		show_files_only(files, pat, hunks, hunk_matches, path_matches)
+		sys.exit(0)
+                
+
+	# show results
+	if pat:
+		print "files matching pattern: '%s'" % pat_str
+		show_pat_results(files, hunks, hunk_matches, path_matches) 
+	else:
+		if diffstat_format:
+			show_diffstat_results(files, hunks)
+		else:
+			show_results(files, hunks, path_matches)
+
+
+	# try writing a new patch, if requested.
+	if new_filename:
+		write_new_patch(new_filename, files, hunk_matches,
+			path_matches)
+
+# newflag is returned a "N" (for a new file) or "|"
+def sum_info(hunks):
+	# add up data for the hunks
+	p = 0
+	m = 0
+	# assume file is not new
+	newflag="|"
+	for hunk in hunks:
+		p += hunk.pluses
+		m += hunk.minuses
+		# see if file is new
+		if hunk.range[0]=="-0,0":
+			newflag="N"
+	c = len(hunks)
+	return (p,m,newflag,c)
+
+def show_hunk_intersection(filename, info1, info2, format):
+	global verbose, debug
+
+	# FIXTHIS - need to finish show_hunk_intersection
+	
+	# get data for each file
+	(p1,m1,newflag1,c1) = sum_info(info1.hunks)
+	(p2,m2,newflag2,c2) = sum_info(info2.hunks)
+
+	# if all aggregates are the same, assume hunks are same
+	if p1==p2 and m1==m2 and newflag1==newflag2 and c1==c2:
+		# FIXTHIS - should really compare hunks line-by-line here
+		return(0,0)
+
+	print "-"+format % (filename, newflag1, p1, m1),
+	print "(%d hunk%s)" % (c1, s(c1))
+	print "+"+format % (filename, newflag2, p2, m2),
+	print "(%d hunk%s)" % (c2, s(c2))
+	return (1,1)
+
+
+# show the intersection of two patches
+def show_intersection(files1, hunks1, files2, hunks2):
+	global verbose
+
+	files = copy.deepcopy(files1)
+	files.update(files2)
+	filenames = files.keys()
+	filenames.sort()
+	# find longest filename and use for format string
+	width = 0
+	for filename in filenames:
+		if width <len(filename):
+			width = len(filename)
+	
+	format = "%%-%ss %%s%%5d+ %%5d-" % width
+
+	tp = 0
+	tm = 0
+	tf = 0
+	for filename in filenames:
+		#print "filename=", filename
+		if files1.has_key(filename) and not files2.has_key(filename):
+			(p,m,newflag,c) = sum_info(files1[filename].hunks)
+			print "-"+format % (filename, newflag, p, m),
+			print "(%d hunk%s)" % (c, s(c))
+			tm += 1
+		if not files1.has_key(filename) and files2.has_key(filename):
+			(p,m,newflag,c) = sum_info(files2[filename].hunks)
+			print "+"+format % (filename, newflag, p, m),
+			print "(%d hunk%s)" % (c, s(c))
+			tp += 1
+		if files1.has_key(filename) and files2.has_key(filename):
+			info1 = files1[filename]
+			info2 = files2[filename]
+			(p,m) = show_hunk_intersection(filename, info1, info2, format)
+			tp += p
+			tm += m
+	
+def pcomp_usage(progname):
+	print """Usage: %s <patch_file1> <patch_file2>
+
+Compares 2 patch files and shows the difference between them.
+
+    -h, --help       Show this usage help.
+    -v, --verbose    Show verbose output (including hunk details)
+    -V, --version    Print the version number
+""" % os.path.basename(progname)
+	sys.exit(1)
+
+def pcomp_main():
+	global verbose, debug
+
+	# parse command line args
+	try:
+		opts, args = getopt.getopt(sys.argv[1:],
+			"hvV",["help", "verbose", "debug","version"])
+	except getopt.GetoptError:
+		# print help information and exit
+		diffinfo_usage(sys.argv[0])
+
+	verbose = 0
+	debug = 0
+
+	# handle options
+	for o,a in opts:
+		if o in ("-h", "--help"):
+			pcomp_usage(sys.argv[0])
+		if o in ("-v", "--verbose"):
+			verbose = 1
+		if o == "--debug":
+			debug = 1
+		if o in ("-f", "--force"):
+			force = 1
+		if o in ["-V","--version"]:
+			print "pcomp version %d.%d" % (major_version, minor_version)
+			sys.exit(1)
+
+	# gather the data for the first patch
+	if len(args)<2:
+		print "Error - you must specify 2 files to compare"
+		pcomp_usage(sys.argv[0])
+
+	filename1 = args[0]
+	filename2 = args[1]
+	try:
+		patch_file1 = open(filename1, "r")
+	except IOError, arg:
+		print "Error - can't open patch file: %s" % filename1
+		print arg.strerror
+		sys.exit(1)
+
+	try:
+		patch_file2 = open(filename2, "r")
+	except IOError, arg:
+		print "Error - can't open patch file: %s" % filename2
+		print arg.strerror
+		sys.exit(1)
+
+	(files1, hunks1, hunk_matches, path_matches) = \
+		read_patch(patch_file1, "", 0, None, "", None, 0, "")
+
+	(files2, hunks2, hunk_matches, path_matches) = \
+		read_patch(patch_file2, "", 0, None, "", None, 0, "")
+
+	# FIXTHIS - should write results to cache file here to save
+	# time on subsequent invocations
+
+	print "Intersection:"
+	show_intersection(files1, hunks1, files2, hunks2)
+	
+if __name__=="__main__":
+	progname = os.path.basename(sys.argv[0])
+	if progname=="diffinfo":
+		diffinfo_main()
+		sys.exit(0)
+	if progname=="pcomp":
+		pcomp_main()
+		sys.exit(0)
+	print "diffinfo program: unknown argv0 command - %s" % progname
+	sys.exit(1)

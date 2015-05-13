@@ -1,0 +1,3 @@
+#!/bin/sh
+
+for f in area*.diff ; do echo -n "$f " ; diffstat $f | tail -n 1 | sed "s/.*changed,/--- /" ; done

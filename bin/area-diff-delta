@@ -1,0 +1,11 @@
+#!/bin/sh
+
+base=$1
+
+if [ -z "$base" ] ; then
+	echo Usage area-diff-delta \<base.diffinfo-filename\> ;
+	exit 1
+fi
+
+cat area-*.diff | diffinfo | tail -n 1
+tail -n 1 $1

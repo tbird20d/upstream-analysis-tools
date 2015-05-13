@@ -1,0 +1,350 @@
+#!/usr/bin/python
+#
+# complexity - get a complexity metric for a set of patches given a specific
+# git search criteria
+#
+# example: complexity --git-filter "--author=sony v3.4.."
+#
+# See README-git-analysis-tools.txt for details about the suite of
+# tools that 'complexity' is part of
+#
+# TO DO:
+#  see why some commit diffs are not parsed well by diffinfo
+
+import diffinfo
+import sys
+import commands
+import datetime
+
+def usage():
+	print """usage: complexity [<options>] <git log params>
+	
+show complexity metrics for the set of git commits returned using the
+specified git log parameters.  If a git param requires quoting,
+escape the quotes with slashes.  ie: --since=\\"1 week ago\\"
+
+ -g   Show a plot of complexity versus time
+ -s   Use --stat, instead of diffinfo for statistics.  This gives
+       a less accurate complexity value, but runs faster
+ -h   Show this usage help
+"""
+	sys.exit(0)
+
+
+# function used to set correct ending for plural words
+# return an "s" if number is not 1
+def s(x):
+	if x==1:
+		return ""
+	else:
+		return "s"
+
+# returns (newfiles, pluses, minuses, hunks)
+def sum_info(hunks):
+	# add up data for the hunks
+	p = 0
+	m = 0
+	# assume files are not new
+	n = 0
+	for hunk in hunks:
+		p += hunk.pluses
+		m += hunk.minuses
+		# see if file is new
+		if hunk.range[0]=="-0,0":
+			n += 1
+	h = len(hunks)
+	return (p,m,n,h)
+
+class git_diff():
+	def __init__(self, hash_str):
+		self.hash_str = hash_str
+		self.cmd = "git show %s" % hash_str
+
+		(self.scode, show) = commands.getstatusoutput(self.cmd)
+		self.show_lines = show.split('\n')
+
+		# if it's a merge, record both diffs??
+		self.cmd = "git diff %s" % hash_str
+		(self.rcode, diff) = commands.getstatusoutput(self.cmd)
+		self.diff_lines = diff.split('\n')
+
+	def xreadlines(self):
+		#for i in range(len(self.diff_lines)):
+		#	yield self.diff_lines[i]
+		for i in range(len(self.show_lines)):
+			yield self.show_lines[i]
+	def close(self):
+		pass
+
+class commit_info():
+	def __init__(self, hash_str):
+		# f = files, p = pluses, m = minuses, h = hunks, n = newfiles
+		self.hash_str = hash_str
+		self.file_list = []
+		self.f = 0
+		self.n = 0
+		self.h = 0
+		self.p = 0
+		self.m = 0
+		self.complexity = 0
+		self.error = 0
+
+	def parse_git_diff(self):
+		# read the diff from git, then parse it with read_patch()
+		diff_pseudo_file = git_diff(self.hash_str)
+
+		try:
+			(self.file_list, self.hunk_list, self.hunk_matches, \
+				self.path_matches) = \
+		    		diffinfo.read_patch(diff_pseudo_file)
+		except:
+			print "##### ERROR: couldn't read patch for hash %s ####" % self.hash_str
+			self.file_list = []
+			self.hunk_list = []
+			self.error = 1
+
+		self.f = len(self.file_list)
+		if self.f:
+			self.p,self.m,self.n,self.h = \
+				sum_info(self.hunk_list.values())
+
+	def parse_git_stat(self, stat_lines):
+		# stat lines have the format:
+		# dir/path/filename       | 3 ++-
+		# the number of + and - may not match total count given
+		for line in stat_lines:
+			if "changed" in line:
+				# parse summary??
+				# DEBUG - compare summary to my calculations
+				my_line = " %d file%s changed" % (self.f, s(self.f))
+				if self.p:
+					my_line += (", %d insertion%s(+)" % (self.p, s(self.p)))
+				if self.m:
+					my_line += (", %d deletion%s(-)" % (self.m, s(self.m)))
+
+				if line != my_line:
+					print "#### ERROR: miscount of git --stat data"
+					print "stat:", line
+					print "calc:", my_line
+
+				continue
+
+			# parse regular line
+			if " | " in line:
+				delim = " | "
+			elif " N " in line:
+				delim = " N "
+				self.n += 1
+
+			# ignore binary (firmware) stuff
+			if " Bin " in line:
+				continue
+
+			(filename, rest) = line.split(delim, 1)
+			self.file_list.append(filename)
+			self.f += 1
+			total_str, bar = rest.split()
+			total = int(total_str)
+			if "+" in bar:
+				if "-" in bar:
+					pluses = bar.index("-")
+					minuses = len(bar)-pluses
+				else:
+					pluses = len(bar)
+					minuses = 0
+			else:
+				pluses = 0
+				minuses = len(bar)
+
+			# adjust values proportionallly if bar was shortened
+			marks_found = pluses+minuses
+			if marks_found < total:
+				factor = float(total)/marks_found
+				pluses = int(factor*pluses)
+				minuses = int(factor*minuses)
+			self.p += pluses
+			self.m += minuses
+
+			# fake the hunks (must be at least one per file)
+			self.h += 1
+
+	# returns (complexity, files, newfiles, hunks, pluses, minuses)
+	def get_results(self):
+		self.complexity = self.f*5 - self.n*2 + self.h*2 + self.p + self.m
+		return (self.complexity, self.f, self.n, \
+			self.h, self.p, self.m)
+
+
+def show_graph(data):
+	import pylab
+	import matplotlib
+	#from matplotlib.dates import MONTHLY, DateFormatter, rrulewrapper, RRuleLocator
+	import datetime
+
+	#rule = rrulewrapper(MONTHLY, interval=2)
+	#loc = RRuleLocator(rule)
+	loc = matplotlib.dates.MonthLocator()
+	date_list = data[0]
+	value_list = data[1]
+	formatter = matplotlib.dates.DateFormatter('%m/%d/%y')
+
+	ax = pylab.subplot(111)
+	pylab.plot_date(date_list, value_list)
+	ax.xaxis.set_major_locator(loc)
+	ax.xaxis.set_major_formatter(formatter)
+
+	# expand the x axis to range by 2 weeks on each side 
+	date1 = datetime.datetime( 2015, 12, 31, 23, 59, 59)
+	date2 = datetime.datetime( 2001, 1, 1, 1, 1, 1)
+	# find the earliest and latest dates in the list, and expand
+	# range by 2 weeks
+	for date in date_list:
+		if date1 > date:
+			date1 = date
+		if date2 < date:
+			date2 = date
+	date1 -= datetime.timedelta(weeks=2)
+	date2 += datetime.timedelta(weeks=2)
+
+	ax.set_autoscalex_on(False)
+	d1_num = matplotlib.dates.date2num(date1)
+	d2_num = matplotlib.dates.date2num(date2)
+	ax.set_xlim([d1_num, d2_num])
+
+	labels = ax.get_xticklabels()
+	pylab.setp(labels, rotation=30, fontsize=10)
+
+	pylab.show()
+
+# parse a set of lines like so:
+#block1
+# indented line 1
+# indented line 2
+#
+#block2
+# indented line 3
+# indented line 4
+#----------
+# NOTE: the first line MUST be a block start
+def parse_log(result):
+	commit_blocks = []
+	lines = result.split("\n")
+
+	# eliminate leading empty lines
+	while lines and (not lines[0]):
+		lines = lines[1:]
+
+	# handle case of no lines
+	if not lines:
+		return commit_blocks
+
+	commit_lines = [lines[0]]
+	for line in lines[1:]:
+		if not line:
+			continue
+		if line.startswith(" "):
+			commit_lines.append(line)
+		else:
+			commit_blocks.append(commit_lines)
+			commit_lines = [line]
+
+	# add last block
+	commit_blocks.append(commit_lines)
+
+	return commit_blocks
+
+
+def complexity_main():
+	global verbose, debug
+
+	verbose = 0
+	debug = 0
+
+	if "-h" in sys.argv:
+		usage()
+
+	graph_flag = 0
+	if "-g" in sys.argv:
+		sys.argv.remove("-g")
+		graph_flag = 1
+
+	use_git_stat = 0
+	if "-s" in sys.argv:
+		sys.argv.remove("-s")
+		use_git_stat = 1
+
+	git_filter = " ".join(sys.argv[1:])
+
+	# keep track of totals for files, newfiles, hunks, pluses, minuses
+	ft = 0
+	nt = 0
+	ht = 0
+	pt = 0
+	mt = 0
+	complexity_tot = 0
+
+	ct = 0  # commit total
+	et = 0	# errors total
+
+	date_list = []
+	complexity_list = []
+
+	if use_git_stat:
+		git_stat = "--stat=99999"
+	else:
+		git_stat = ""
+
+	cmd = 'git log --pretty=format:%%h,%%ae,%%ai %s %s' % (git_stat, git_filter)
+
+	print "cmd='%s'" % cmd
+	(rcode, result) = commands.getstatusoutput(cmd)
+
+	commit_blocks = parse_log(result)
+	#print commit_blocks
+		
+	# do different loop, depending on use_git_stat
+	for block in commit_blocks:
+		info_line = block[0]
+		(git_hash, email, date_str) = info_line.split(",")
+		date = datetime.datetime.strptime(date_str[:19], "%Y-%m-%d %H:%M:%S")
+		commit = commit_info(git_hash)
+		if use_git_stat:
+			commit.parse_git_stat(block[1:])
+		else:
+			commit.parse_git_diff()
+		(complexity,f,n,h,p,m) = commit.get_results()
+	
+		ct += 1
+
+		ft += f
+		ht += h
+		pt += p
+		mt += m
+		nt += n
+
+		if commit.error:
+			et += 1
+			continue
+		
+		print info_line
+		print "   %d complexity : %d files, %d+ %d- %s %d hunks" % \
+			(complexity, f, p, m, n, h)
+
+		date_list.append(date)
+		complexity_list.append(complexity)
+
+		complexity_tot += complexity
+
+	print "### Total result for '%s':" % git_filter
+	print "@@@   %d complexity : %d commits, %d files, %d+ %d- %s %d hunks" % \
+		(complexity_tot, ct, ft, pt, mt, nt, ht)
+
+	if et:
+		print "Warning: %d errors found - please review log" % et
+
+	if graph_flag:
+		show_graph([date_list, complexity_list])
+
+if __name__=="__main__":
+	complexity_main()
+	sys.exit(0)

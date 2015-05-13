@@ -1,0 +1,71 @@
+#!/usr/bin/python
+#
+# author-stats - report the number of commits by author for a set of commits
+#
+# specify git log arguments to filter the commits, or this command
+# will show information from the beginning of the repository.
+# for the Linux kernel, this will take a LONG time.
+
+import sys
+import os
+import commands
+
+def usage():
+	print """usage: %s <git_log_args>
+This program shows authors for a selected set of commits
+in the current git repository
+
+ -h        Show this usage
+ -n <num>  Limit output to top <num> authors
+""" % (os.path.basename(sys.argv[0]))
+	sys.exit(0)
+
+
+def main():
+	if '-h' in sys.argv:
+		usage()
+
+	count_limit = 99999
+	if '-n' in sys.argv:
+		i = sys.argv.index('-n')
+		count_limit = int(sys.argv[i+1])
+		del sys.argv[i+1]
+		del sys.argv[i]
+
+	git_args = sys.argv[1:]
+	git_args_str = " ".join(git_args)
+
+	# gather the commit data
+	cmd="git log --all-match --pretty=format:%%h,%%ae %s" % git_args_str
+	(rcode, result) = commands.getstatusoutput(cmd)
+
+	authors = {}
+	try:
+		for line in result.split("\n"):
+			(hash_str, author) = line.split(",",1)
+
+			try:
+				authors[author] += 1
+			except:
+				authors[author] = 1
+	except:
+		print "### ERROR parsing 'git log' results.  Results are:"
+		#print result
+		import traceback
+		traceback.print_exc(file=sys.stdout)
+		sys.exit(1)
+
+
+	# print out authors sorted by count of commits
+	authors_count = authors.items()
+	authors_count.sort(key=lambda x: x[1])
+
+	authors_count = authors_count[-count_limit:]
+
+	print "author                                   # commits"
+	for a_tuple in authors_count:
+		# print author, count
+		print "%-40s %4d" % (a_tuple[0], a_tuple[1])
+
+if __name__=="__main__":
+	main()

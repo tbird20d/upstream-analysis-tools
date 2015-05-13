@@ -1,0 +1,36 @@
+#!/bin/sh
+# usage: makearea <area> <pattern> <patchfile>
+# make an "area" file based on a file path regex
+
+area=$1
+path=$2
+patchfile=$3
+
+if [ -z "$area" ] ; then
+	echo Usage: makearea \<area-name\> [\<path-pattern\> [\<patchfile\>]] ;
+	echo "if no patchfile is specified, use 'base.diff'" ;
+	echo "if no path-pattern is is specified, use area-name as pattern" ;
+	exit 1
+fi
+
+if [ -z "$path" ] ; then
+	path=$area
+fi
+
+if [ -z "$patchfile" ] ; then
+	patchfile=base.diff
+fi
+
+#if [ -z "$area" -o -z "$path" -o -z "$patchfile" ] ; then
+#	echo Usage: makearea \<area\> \<path\> \<patchfile\> ;
+#	exit 1
+#fi
+
+filename=area-${area}.diff
+if [ -f $filename ] ; then
+	echo output file $filename  already exists. aborting... 
+	exit 1
+fi
+
+echo diffinfo -p "$path" -n $filename $patchfile >method-area-${area}
+diffinfo -p "$path" -n $filename $patchfile
