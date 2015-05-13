@@ -7,7 +7,7 @@ initially focused on the Linux kernel.
 The tools allow you to compare a Linux kernel source tree with it's
 upstream (mainline) source, and gather various statistics and
 information about it.  It is intended to allow individuals and companies
-assess the status of a particular source tree, by seeing how much code
+to assess the status of a particular source tree, by seeing how much code
 is out-of-tree, and where that code is concentrated.
 
 These tools were originally written by Tim Bird, at Sony and Sony

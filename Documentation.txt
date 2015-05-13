@@ -85,7 +85,7 @@ These are the same arguments for restricting scope that is used by 'git log'.
 Some common scoping arguments are:
 
 'v3.4..' - show stats since mainline version v3.4
-'--author=sony' - show stats for sony authors (as well one guy named 'sony')
+'--author=sony' - show stats for sony authors (and also one guy named 'sony')
 'drivers/usb' - show stats for a particular sub-directory
 
 == area-stats tools ==
