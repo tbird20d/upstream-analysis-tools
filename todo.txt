@@ -17,3 +17,12 @@ To do list for upstream-analysis-tools:
  - divide code into smaller pieces (sub-areas)
  - determine 'origin' of code (e.g. Google, Soc Vendor, Upstream, other)
    - use tags to indicate origin for different code areas
+
+== features ==
+have git tools support a GIT_SCOPE environment variable
+
+== rejected features ==
+ - use '#!/usr/bin/env python2.7' for shebang line
+   - rejected for diffinfo of '-u' argument in diffinfo, which #!/usr/bin/env
+     doesn't support (Linux only passes one argument to a shebang line)
+

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # domain-stats - examine a set of git commits, and find the number of
 # authors and number of commits for each domain found.

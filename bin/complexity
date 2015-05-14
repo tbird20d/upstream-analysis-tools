@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # complexity - get a complexity metric for a set of patches given a specific
 # git search criteria
