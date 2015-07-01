@@ -1,6 +1,6 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
-# file-stats.py - examine a set of git commits for a file or set of files,
+# file-stats - examine a set of git commits for a file or set of files,
 #    and show the complexity value for that commits (for the given log scope)
 #
 # example: file-stats v3.4.. --author=balbi drivers/usb

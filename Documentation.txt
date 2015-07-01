@@ -10,7 +10,6 @@ These tools are used separately or in conjunction to answer various
 questions a developer or organization might have about a source tree,
 either in isolation or in reference to an upstream version of the source.
 
-
 == Diffinfo ==
 This is a general tool for examining and manipulating 'diff' files
 (also known as patches).

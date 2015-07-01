@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # git-mine-stats.py - collect commit stats from git logs over using a set of
 # user-specific filters in loops.

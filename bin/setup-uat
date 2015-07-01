@@ -1,0 +1,7 @@
+#!/bin/sh
+
+echo This script should be sourced and not executed
+
+# add binary location to front of path
+export PATH=/home/CORPUSERS/10102229/work/upstream-analysis-tools/bin:$PATH
+echo Added UTA bin directory to PATH

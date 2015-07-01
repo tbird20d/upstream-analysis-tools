@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # hotspots.py - examine a set of git commits, and indicate an area
 #   where a lot of work is being conducted 

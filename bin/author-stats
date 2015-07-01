@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 #
 # author-stats - report the number of commits by author for a set of commits
 #

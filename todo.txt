@@ -1,9 +1,12 @@
 To do list for upstream-analysis-tools:
 
- - run some basic test to revalidate the workflow
+ - run some basic tests to revalidate the workflow
    - especially after modifying some of the scripts
  - create add-to-area tool
  - increase automation
+1   - make tool to download source from major repositories, and isolate
+	kernel code
+      - make a wiki page with repository list
    - automatically create base.diff
      - parse base kernel version from Makefile
      - if in git repository, do e.g. 'git diff v3.4.. >base.diff'
@@ -17,3 +20,15 @@ To do list for upstream-analysis-tools:
  - divide code into smaller pieces (sub-areas)
  - determine 'origin' of code (e.g. Google, Soc Vendor, Upstream, other)
    - use tags to indicate origin for different code areas
+   - find code already upstream
+
+== features ==
+have git tools support a GIT_SCOPE environment variable
+
+== rejected features ==
+ - use '#!/usr/bin/env python2.7' for shebang line
+   - rejected for diffinfo of '-u' argument in diffinfo, which #!/usr/bin/env
+     doesn't support (Linux only passes one argument to a shebang line)
+
+== done ==
+ + publish tools (will be in white paper for LCJ)
