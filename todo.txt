@@ -1,12 +1,19 @@
 To do list for upstream-analysis-tools:
 
- - run some basic tests to revalidate the workflow
+ - run some basic test to revalidate the workflow
    - especially after modifying some of the scripts
  - create add-to-area tool
  - increase automation
-1   - make tool to download source from major repositories, and isolate
-	kernel code
-      - make a wiki page with repository list
+   - write uat-get-kernel-source.py
+     + make wiki page with repository list
+       + read source url from elinux wiki page
+     + download archive files
+       - handle .git repositories
+     + unzip files
+	- asus kernel0130.zip is a tar within a zip
+          - need to handle this
+        - samsung SM-G900....zip is a tar within a zip
+          - need to handle this
    - automatically create base.diff
      - parse base kernel version from Makefile
      - if in git repository, do e.g. 'git diff v3.4.. >base.diff'
@@ -23,7 +30,8 @@ To do list for upstream-analysis-tools:
    - find code already upstream
 
 == features ==
-have git tools support a GIT_SCOPE environment variable
+ - have git tools support a GIT_SCOPE environment variable
+   - GIT_SCOPE could be something like "v3.4.." or "--author=sony[em]"
 
 == rejected features ==
  - use '#!/usr/bin/env python2.7' for shebang line
