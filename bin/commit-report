@@ -1,0 +1,72 @@
+#!/usr/bin/env python
+#
+# commit-report - report information about a set of commits
+#  specified by 'git log' arguments
+#
+# This shows the abbreviated hash, description, author, date and the describe
+# string for the commit.  Note that the only reason this isn't just a simple
+# 'git log' operation is that you can't get the git-describe string from that.
+#
+# This script is used primarily to find out when specific patches or groups
+# of patches were integrated into Linus Torvalds mainline kernel source tree.
+#
+
+import sys
+import os
+import commands
+
+def usage():
+	print """usage: %s <git_log_args>
+This program shows information for a selected set of commits
+in the current git repository.
+
+Some handy git log args are:
+ --author=john.smith
+ --grep='qcom'
+ v3.4..
+
+ -h        Show this usage
+""" % (os.path.basename(sys.argv[0]))
+	sys.exit(0)
+
+
+def main():
+	if '-h' in sys.argv:
+		usage()
+
+	git_args = sys.argv[1:]
+	git_args_str = " ".join(git_args)
+
+	# gather the commit data
+	cmd="git log --all-match --format=format:%%h %s" % git_args_str
+	(rcode, result) = commands.getstatusoutput(cmd)
+
+	commits = []
+	if not result.strip():
+		print "No matches found."
+		sys.exit(0)
+	
+	try:
+		for line in result.split("\n"):
+			(commit_id) = line.strip()
+			commits.append(commit_id)
+			cmd = "git describe %s" % commit_id
+			(rcode, describe_str) = commands.getstatusoutput(cmd)
+			describe_str = describe_str.strip()
+			cmd = "git log --format=format:\"%%ae|%%s\" %s^..%s" % (commit_id, commit_id)
+			#print "cmd=", cmd
+			(rcode, log_str) = commands.getstatusoutput(cmd)
+			log_str = log_str.strip()
+			#print "log_str=", log_str
+			(author, subject) = log_str.split("|")
+			print "%-8s | %-25s | %-70s | %s" % (commit_id, author[:25], subject[:70], describe_str)
+	except:
+		print "### ERROR parsing 'git log' results.  Results are:"
+		#print result
+		import traceback
+		traceback.print_exc(file=sys.stdout)
+		sys.exit(1)
+
+
+if __name__=="__main__":
+	main()
