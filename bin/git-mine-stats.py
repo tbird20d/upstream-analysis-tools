@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# git-mine-stats.py - collect commit stats from git logs over using a set of
+# git-mine-stats.py - collect commit stats from git logs using a set of
 # user-specific filters in loops.
 #
 # This is designed to get stats for multiple "groups", over a set of conditions
