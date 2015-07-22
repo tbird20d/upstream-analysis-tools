@@ -15,6 +15,8 @@ import sys
 import os
 import commands
 
+debug = 0
+
 def usage():
 	print """usage: %s <git_log_args>
 This program shows information for a selected set of commits
@@ -29,10 +31,20 @@ Some handy git log args are:
 """ % (os.path.basename(sys.argv[0]))
 	sys.exit(0)
 
+def dprint(msg):
+	global debug
+
+	if debug:
+		print msg
 
 def main():
+	global debug
+
 	if '-h' in sys.argv:
 		usage()
+	if '--debug' in sys.argv:
+		sys.argv.remove("--debug")
+		debug = 1
 
 	git_args = sys.argv[1:]
 	git_args_str = " ".join(git_args)
@@ -41,7 +53,6 @@ def main():
 	cmd="git log --all-match --format=format:%%h %s" % git_args_str
 	(rcode, result) = commands.getstatusoutput(cmd)
 
-	commits = []
 	if not result.strip():
 		print "No matches found."
 		sys.exit(0)
@@ -49,17 +60,26 @@ def main():
 	try:
 		for line in result.split("\n"):
 			(commit_id) = line.strip()
-			commits.append(commit_id)
+			dprint("commit_id=%s" % commit_id)
 			cmd = "git describe %s" % commit_id
 			(rcode, describe_str) = commands.getstatusoutput(cmd)
 			describe_str = describe_str.strip()
-			cmd = "git log --format=format:\"%%ae|%%s\" %s^..%s" % (commit_id, commit_id)
+		
+			dprint("describe_str=%s" % describe_str)
+			cmd = "git log --format=format:\"%%h|%%ae|%%s\" %s^..%s" % (commit_id, commit_id)
 			#print "cmd=", cmd
 			(rcode, log_str) = commands.getstatusoutput(cmd)
 			log_str = log_str.strip()
-			#print "log_str=", log_str
-			(author, subject) = log_str.split("|")
-			print "%-8s | %-25s | %-70s | %s" % (commit_id, author[:25], subject[:70], describe_str)
+			dprint("log_str=%s" % log_str)
+			if '\n' not in log_str:
+				(author, subject) = log_str.split("|", 1)
+				print "%-8s | %-25s | %-70s | %s" % (commit_id, author[:25], subject[:70], describe_str)
+			else:
+				# multi-line - this must be a merge commit
+				for l in log_str.split('\n'):
+					(hash_str, author, subject) = l.split("|", 2)
+					print "%-8s # %-25s # %-70s # %s" % (hash_str, author[:25], subject[:70], describe_str)
+
 	except:
 		print "### ERROR parsing 'git log' results.  Results are:"
 		#print result
